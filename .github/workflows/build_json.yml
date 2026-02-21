@@ -1,1 +1,72 @@
+name: "Rebuild JSON for Dune LiveFetch"
 
+on:
+  schedule:
+    - cron: "0 5 * * *"      # 05:00 UTC daily — after Jon typically pushes updates
+  workflow_dispatch:          # manual trigger anytime from GitHub UI
+
+jobs:
+  build:
+    name: "Download Parquet → Build JSON → Commit"
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    permissions:
+      contents: write         # needed to commit json_data/ back to repo
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install pandas pyarrow
+
+      - name: Install zstd
+        run: sudo apt-get install -y zstd
+
+      - name: Download Jon's dataset from Cloudflare R2
+        run: |
+          echo "Downloading data.tar.zst..."
+          curl -L --retry 5 --retry-delay 15 --progress-bar \
+            -o data.tar.zst \
+            "https://s3.jbecker.dev/data.tar.zst"
+          echo "Size: $(du -sh data.tar.zst)"
+
+      - name: Extract Parquet files
+        run: |
+          tar --use-compress-program=unzstd -xf data.tar.zst
+          rm data.tar.zst
+          echo "Extracted:"
+          find data/ -name "*.parquet" | wc -l
+          echo "parquet files"
+          du -sh data/
+
+      - name: Build JSON files
+        run: python build_json.py --data-dir ./data --out-dir ./json_data
+
+      - name: Show output summary
+        run: |
+          echo "=== Generated JSON files ==="
+          ls -lh json_data/*.json
+
+      - name: Commit updated JSON files
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add json_data/
+          if git diff --staged --quiet; then
+            echo "No changes to JSON — data hasn't changed upstream."
+          else
+            git commit -m "data: rebuild JSON $(date -u +%Y-%m-%d)"
+            git push
+          fi
+
+      - name: Cleanup large files
+        if: always()
+        run: rm -rf data/ data.tar.zst
