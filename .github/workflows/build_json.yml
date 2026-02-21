@@ -32,11 +32,37 @@ jobs:
 
       - name: Download Jon's dataset from Cloudflare R2
         run: |
-          echo "Downloading data.tar.zst..."
-          curl -L --retry 5 --retry-delay 15 --progress-bar \
-            -o data.tar.zst \
-            "https://s3.jbecker.dev/data.tar.zst"
-          echo "Size: $(du -sh data.tar.zst)"
+          echo "Downloading data.tar.zst (with resume support)..."
+
+          # Use a retry loop with resume (-C -) so if the connection drops
+          # mid-download it picks up where it left off instead of starting over.
+          # --http1.1 avoids the HTTP/2 stream error you saw.
+          for attempt in 1 2 3 4 5; do
+            echo "Attempt $attempt..."
+            curl \
+              --http1.1 \
+              -L \
+              -C - \
+              --retry 3 \
+              --retry-delay 30 \
+              --retry-max-time 7200 \
+              --connect-timeout 60 \
+              --max-time 7200 \
+              --progress-bar \
+              -o data.tar.zst \
+              "https://s3.jbecker.dev/data.tar.zst" && break
+
+            echo "Download attempt $attempt failed. Waiting 60s before retry..."
+            sleep 60
+          done
+
+          # Verify the file actually downloaded
+          if [ ! -f data.tar.zst ] || [ ! -s data.tar.zst ]; then
+            echo "ERROR: data.tar.zst is missing or empty after all attempts."
+            exit 1
+          fi
+
+          echo "Download complete. Size: $(du -sh data.tar.zst)"
 
       - name: Extract Parquet files
         run: |
